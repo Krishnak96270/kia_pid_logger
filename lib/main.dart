@@ -1,5 +1,10 @@
-// Flutter app: Manual PID tester for Kia Sonet using ELM327 Bluetooth
-// Updated package: flutter_bluetooth_serial_plus
+// Updated Flutter app with:
+// 1. Bluetooth enable request
+// 2. Refresh/search paired devices
+// 3. Select ELM327 device
+// 4. PID input box
+// 5. Send command
+// 6. Save response logs
 
 import 'dart:async';
 import 'dart:convert';
@@ -9,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bluetooth_serial_plus/flutter_bluetooth_serial_plus.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -84,44 +90,78 @@ class BluetoothDeviceScreen extends StatefulWidget {
 
 class _BluetoothDeviceScreenState extends State<BluetoothDeviceScreen> {
   List<BluetoothDevice> devices = [];
+  bool loading = true;
 
   @override
   void initState() {
     super.initState();
-    loadDevices();
+    initializeBluetooth();
+  }
+
+  Future<void> initializeBluetooth() async {
+    await Permission.bluetooth.request();
+    await Permission.bluetoothScan.request();
+    await Permission.bluetoothConnect.request();
+    await Permission.location.request();
+
+    bool? enabled = await FlutterBluetoothSerial.instance.isEnabled;
+
+    if (enabled == false) {
+      await FlutterBluetoothSerial.instance.requestEnable();
+    }
+
+    await loadDevices();
   }
 
   Future<void> loadDevices() async {
+    setState(() => loading = true);
+
     final bondedDevices =
         await FlutterBluetoothSerial.instance.getBondedDevices();
 
     setState(() {
       devices = bondedDevices;
+      loading = false;
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Select ELM327 Device')),
-      body: ListView.builder(
-        itemCount: devices.length,
-        itemBuilder: (context, index) {
-          final device = devices[index];
-          return ListTile(
-            title: Text(device.name ?? 'Unknown Device'),
-            subtitle: Text(device.address),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => PIDTesterScreen(device: device),
-                ),
-              );
-            },
-          );
-        },
+      appBar: AppBar(
+        title: const Text('Select ELM327 Device'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: loadDevices,
+          )
+        ],
       ),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : devices.isEmpty
+              ? const Center(
+                  child: Text('No paired Bluetooth devices found'),
+                )
+              : ListView.builder(
+                  itemCount: devices.length,
+                  itemBuilder: (context, index) {
+                    final device = devices[index];
+                    return ListTile(
+                      leading: const Icon(Icons.bluetooth),
+                      title: Text(device.name ?? 'Unknown Device'),
+                      subtitle: Text(device.address),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => PIDTesterScreen(device: device),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
     );
   }
 }
@@ -214,7 +254,6 @@ class _PIDTesterScreenState extends State<PIDTesterScreen> {
     final file = File('${directory.path}/elm_logs.txt');
 
     String content = '';
-
     for (var log in logs) {
       content +=
           'CMD: ${log['command']}\nRESP: ${log['response']}\nTIME: ${log['timestamp']}\n-------------------\n';
@@ -240,17 +279,14 @@ class _PIDTesterScreenState extends State<PIDTesterScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'CMD: ${log['command']}',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
+            Text('CMD: ${log['command']}',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 6),
             Text('RESP: ${log['response']}'),
             const SizedBox(height: 6),
-            Text(
-              log['timestamp'],
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
-            ),
+            Text(log['timestamp'],
+                style:
+                    const TextStyle(fontSize: 12, color: Colors.grey)),
           ],
         ),
       ),
@@ -300,9 +336,7 @@ class _PIDTesterScreenState extends State<PIDTesterScreen> {
                     const Divider(),
                     Expanded(
                       child: logs.isEmpty
-                          ? const Center(
-                              child: Text('No logs saved yet'),
-                            )
+                          ? const Center(child: Text('No logs saved yet'))
                           : ListView.builder(
                               itemCount: logs.length,
                               itemBuilder: (context, index) {
