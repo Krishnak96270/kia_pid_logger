@@ -1,4 +1,16 @@
+// Flutter app: Manual PID tester for Kia Sonet using ELM327 Bluetooth
+// Updated package: flutter_bluetooth_serial_plus
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_bluetooth_serial_plus/flutter_bluetooth_serial_plus.dart';
+import 'package:path/path.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:sqflite/sqflite.dart';
 
 void main() {
   runApp(const MyApp());
@@ -7,116 +19,299 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      debugShowCheckedModeBanner: false,
+      title: 'ELM327 PID Logger',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: const BluetoothDeviceScreen(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+class DBHelper {
+  static Database? _db;
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
+  static Future<Database> get database async {
+    if (_db != null) return _db!;
+    _db = await initDB();
+    return _db!;
+  }
 
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
+  static Future<Database> initDB() async {
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, 'elm_logs.db');
 
-  final String title;
+    return await openDatabase(
+      path,
+      version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE logs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command TEXT,
+            response TEXT,
+            timestamp TEXT
+          )
+        ''');
+      },
+    );
+  }
 
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  static Future<void> insertLog(String command, String response) async {
+    final db = await database;
+    await db.insert('logs', {
+      'command': command,
+      'response': response,
+      'timestamp': DateTime.now().toIso8601String(),
+    });
+  }
+
+  static Future<List<Map<String, dynamic>>> getLogs() async {
+    final db = await database;
+    return await db.query('logs', orderBy: 'id DESC');
+  }
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class BluetoothDeviceScreen extends StatefulWidget {
+  const BluetoothDeviceScreen({super.key});
 
-  void _incrementCounter() {
+  @override
+  State<BluetoothDeviceScreen> createState() =>
+      _BluetoothDeviceScreenState();
+}
+
+class _BluetoothDeviceScreenState extends State<BluetoothDeviceScreen> {
+  List<BluetoothDevice> devices = [];
+
+  @override
+  void initState() {
+    super.initState();
+    loadDevices();
+  }
+
+  Future<void> loadDevices() async {
+    final bondedDevices =
+        await FlutterBluetoothSerial.instance.getBondedDevices();
+
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      devices = bondedDevices;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+      appBar: AppBar(title: const Text('Select ELM327 Device')),
+      body: ListView.builder(
+        itemCount: devices.length,
+        itemBuilder: (context, index) {
+          final device = devices[index];
+          return ListTile(
+            title: Text(device.name ?? 'Unknown Device'),
+            subtitle: Text(device.address),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => PIDTesterScreen(device: device),
+                ),
+              );
+            },
+          );
+        },
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+    );
+  }
+}
+
+class PIDTesterScreen extends StatefulWidget {
+  final BluetoothDevice device;
+
+  const PIDTesterScreen({super.key, required this.device});
+
+  @override
+  State<PIDTesterScreen> createState() => _PIDTesterScreenState();
+}
+
+class _PIDTesterScreenState extends State<PIDTesterScreen> {
+  BluetoothConnection? connection;
+  bool isConnected = false;
+  bool isConnecting = true;
+
+  String incomingBuffer = '';
+  final TextEditingController commandController = TextEditingController();
+
+  List<Map<String, dynamic>> logs = [];
+  StreamSubscription? inputSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    connectELM();
+    refreshLogs();
+  }
+
+  Future<void> connectELM() async {
+    try {
+      connection = await BluetoothConnection.toAddress(widget.device.address);
+      isConnected = true;
+      isConnecting = false;
+      setState(() {});
+
+      inputSubscription = connection!.input!.listen((data) {
+        incomingBuffer += ascii.decode(data);
+      });
+
+      await initializeELM327();
+    } catch (e) {
+      debugPrint('Connection Error: $e');
+      isConnecting = false;
+      setState(() {});
+    }
+  }
+
+  Future<void> initializeELM327() async {
+    await sendRaw('ATZ');
+    await sendRaw('ATE0');
+    await sendRaw('ATL0');
+    await sendRaw('ATS0');
+    await sendRaw('ATH0');
+    await sendRaw('ATSP0');
+  }
+
+  Future<void> sendRaw(String cmd) async {
+    connection?.output.add(ascii.encode('$cmd\r'));
+    await connection?.output.allSent;
+    await Future.delayed(const Duration(milliseconds: 500));
+  }
+
+  Future<void> sendCommand() async {
+    final cmd = commandController.text.trim();
+    if (cmd.isEmpty) return;
+
+    incomingBuffer = '';
+
+    await sendRaw(cmd);
+    await Future.delayed(const Duration(seconds: 1));
+
+    String response = incomingBuffer.trim();
+
+    await DBHelper.insertLog(cmd, response);
+    await refreshLogs();
+
+    commandController.clear();
+  }
+
+  Future<void> refreshLogs() async {
+    logs = await DBHelper.getLogs();
+    setState(() {});
+  }
+
+  Future<void> exportLogs() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/elm_logs.txt');
+
+    String content = '';
+
+    for (var log in logs) {
+      content +=
+          'CMD: ${log['command']}\nRESP: ${log['response']}\nTIME: ${log['timestamp']}\n-------------------\n';
+    }
+
+    await file.writeAsString(content);
+    Share.shareXFiles([XFile(file.path)], text: 'ELM327 Logs');
+  }
+
+  @override
+  void dispose() {
+    inputSubscription?.cancel();
+    connection?.dispose();
+    commandController.dispose();
+    super.dispose();
+  }
+
+  Widget buildLogCard(Map<String, dynamic> log) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('You have pushed the button this many times:'),
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              'CMD: ${log['command']}',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            Text('RESP: ${log['response']}'),
+            const SizedBox(height: 6),
+            Text(
+              log['timestamp'],
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.device.name ?? 'PID Tester'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: exportLogs,
+          )
+        ],
       ),
+      body: isConnecting
+          ? const Center(child: CircularProgressIndicator())
+          : !isConnected
+              ? const Center(child: Text('Connection Failed'))
+              : Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: commandController,
+                              decoration: const InputDecoration(
+                                border: OutlineInputBorder(),
+                                labelText: 'Enter PID / AT Command',
+                                hintText: 'Example: 010C',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          ElevatedButton(
+                            onPressed: sendCommand,
+                            child: const Text('Send'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(),
+                    Expanded(
+                      child: logs.isEmpty
+                          ? const Center(
+                              child: Text('No logs saved yet'),
+                            )
+                          : ListView.builder(
+                              itemCount: logs.length,
+                              itemBuilder: (context, index) {
+                                return buildLogCard(logs[index]);
+                              },
+                            ),
+                    ),
+                  ],
+                ),
     );
   }
 }
