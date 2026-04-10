@@ -1,10 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 void main() {
@@ -16,9 +15,7 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: HomePage(),
-    );
+    return const MaterialApp(home: HomePage());
   }
 }
 
@@ -30,130 +27,92 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  BluetoothConnection? connection;
   String status = "Disconnected";
-  String scanStatus = "Idle";
   List<String> logs = [];
+
   final TextEditingController pidController = TextEditingController();
 
-  int countdown = 0;
-  bool showNextButton = false;
+  BluetoothDevice? device;
+  BluetoothCharacteristic? writeChar;
+  BluetoothCharacteristic? notifyChar;
+
+  StreamSubscription<List<int>>? notificationSub;
 
   // ---------------- CONNECT ----------------
-  Future<void> connect() async {
-    List<BluetoothDevice> devices =
-        await FlutterBluetoothSerial.instance.getBondedDevices();
+  Future<void> connectToOBD() async {
+    status = "Scanning...";
+    setState(() {});
 
-    if (devices.isNotEmpty) {
-      BluetoothDevice device = devices.first;
+    FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
 
-      connection = await BluetoothConnection.toAddress(device.address);
+    FlutterBluePlus.scanResults.listen((results) async {
+      for (ScanResult r in results) {
+        if (r.device.name.contains("OBD") ||
+            r.device.name.contains("ELM")) {
+          device = r.device;
+          await FlutterBluePlus.stopScan();
 
-      setState(() {
-        status = "Connected: ${device.name}";
-      });
-    }
+          await device!.connect();
+          status = "Connected: ${r.device.name}";
+          setState(() {});
+
+          var services = await device!.discoverServices();
+
+          for (var s in services) {
+            for (var c in s.characteristics) {
+              if (c.properties.write) writeChar = c;
+              if (c.properties.notify) notifyChar = c;
+            }
+          }
+
+          if (notifyChar != null) {
+            await notifyChar!.setNotifyValue(true);
+
+            notificationSub =
+                notifyChar!.onValueReceived.listen((value) {
+              String resp = utf8.decode(value);
+              logs.add("RESP: $resp");
+              setState(() {});
+            });
+          }
+
+          break;
+        }
+      }
+    });
   }
 
   // ---------------- SEND COMMAND ----------------
-  Future<String> sendCommand(String cmd) async {
-    if (connection == null) return "Not connected";
-
-    connection!.output.add(Uint8List.fromList(utf8.encode("$cmd\r")));
-    await connection!.output.allSent;
-
-    await Future.delayed(const Duration(milliseconds: 500));
-
-    String response = "";
-
-    await for (Uint8List data in connection!.input!) {
-      response += utf8.decode(data);
-      if (response.contains(">")) break;
+  Future<void> sendCommand(String cmd) async {
+    if (writeChar == null) {
+      logs.add("Not connected");
+      setState(() {});
+      return;
     }
 
-    return response.replaceAll(">", "").trim();
-  }
+    await writeChar!.write(utf8.encode("$cmd\r"));
 
-  // ---------------- PHASE RUN ----------------
-  Future<void> runPhase(List<String> pids, int delayMs) async {
-    scanStatus = "Scanning...";
+    logs.add("CMD: $cmd");
     setState(() {});
-
-    for (String pid in pids) {
-      String resp = await sendCommand(pid);
-
-      logs.add("CMD:$pid\nRESP:$resp\n---");
-
-      await Future.delayed(Duration(milliseconds: delayMs));
-      setState(() {});
-    }
-
-    scanStatus = "Completed";
-    setState(() {});
-
-    startCountdown();
-  }
-
-  // ---------------- COUNTDOWN ----------------
-  void startCountdown() {
-    countdown = 10;
-    showNextButton = false;
-
-    Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (countdown == 0) {
-        timer.cancel();
-        showNextButton = true;
-      } else {
-        countdown--;
-      }
-      setState(() {});
-    });
   }
 
   // ---------------- EXPORT ----------------
   Future<void> exportLogs() async {
     final dir = await getExternalStorageDirectory();
     final file = File("${dir!.path}/scan_log.txt");
+
     await file.writeAsString(logs.join("\n"));
+
+    logs.add("Saved to ${file.path}");
+    setState(() {});
   }
 
-  // ---------------- PHASE DATA ----------------
-
-  final phase1 = [
-    "0100","0120","0140","0160","0180",
-    "0104","0105","010C","010D","015E",
-    "0111","010F","0110",
-    "0178","0179","017A","017B"
-  ];
-
-  List<String> phase2 = List.generate(256, (i) {
-    String hex = i.toRadixString(16).padLeft(2, '0').toUpperCase();
-    return "01$hex";
-  });
-
-  final phase3 = [
-    "220000","220010","220020","220030",
-    "220040","220050","220060","220070",
-    "220080","220090","2200A0","2200B0",
-    "2200C0","2200D0","2200E0","2200F0",
-    "220100","220110","220120","220130",
-    "220140","220150","220160","220170",
-    "220180","220190","2201A0","2201B0",
-    "2201C0","2201D0","2201E0","2201F0",
-    "221000","221010","221020",
-    "221100","221110",
-    "222000","222010","223000"
-  ];
-
-  final phase4 = [
-    "2201A0","2201A1","2201A2",
-    "2201B0","2201B1",
-    "2201C0","2201C1",
-    "2201D0","2201D1","2201D2",
-    "2210A0","2210A1",
-    "2210B0",
-    "221100","221101"
-  ];
+  @override
+  void dispose() {
+    notificationSub?.cancel();
+    device?.disconnect();
+    super.dispose();
+  }
 
   // ---------------- UI ----------------
   @override
@@ -171,38 +130,11 @@ class _HomePageState extends State<HomePage> {
       body: Column(
         children: [
           ElevatedButton(
-              onPressed: connect,
-              child: const Text("Connect Bluetooth")),
+            onPressed: connectToOBD,
+            child: const Text("Connect OBD"),
+          ),
 
           Text(status),
-
-          Text(scanStatus,
-              style: TextStyle(
-                  color: scanStatus == "Scanning..."
-                      ? Colors.orange
-                      : Colors.green)),
-
-          ElevatedButton(
-              onPressed: () => runPhase(phase1, 800),
-              child: const Text("Run Phase 1")),
-
-          ElevatedButton(
-              onPressed: () => runPhase(phase2, 1000),
-              child: const Text("Run Phase 2")),
-
-          ElevatedButton(
-              onPressed: () => runPhase(phase3, 1300),
-              child: const Text("Run Phase 3")),
-
-          ElevatedButton(
-              onPressed: () => runPhase(phase4, 1300),
-              child: const Text("Run Phase 4")),
-
-          if (countdown > 0) Text("Next Phase in: $countdown sec"),
-
-          if (showNextButton)
-            const Text("You can start next phase",
-                style: TextStyle(color: Colors.green)),
 
           Padding(
             padding: const EdgeInsets.all(8),
@@ -210,19 +142,17 @@ class _HomePageState extends State<HomePage> {
               controller: pidController,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
-                labelText: "Enter PID (e.g. 2201D2)",
+                labelText: "Enter PID (e.g. 010C, 2201D2)",
               ),
             ),
           ),
 
           ElevatedButton(
-              onPressed: () async {
-                String cmd = pidController.text.trim();
-                String resp = await sendCommand(cmd);
-                logs.add("CMD:$cmd\nRESP:$resp\n---");
-                setState(() {});
-              },
-              child: const Text("Send Manual PID")),
+            onPressed: () {
+              sendCommand(pidController.text.trim());
+            },
+            child: const Text("Send Command"),
+          ),
 
           Expanded(
             child: ListView.builder(
