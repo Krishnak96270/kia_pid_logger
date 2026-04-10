@@ -8,19 +8,25 @@ import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:path_provider/path_provider.dart';
 
 void main() {
-  runApp(MyApp());
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(home: HomePage());
+    return const MaterialApp(
+      home: HomePage(),
+    );
   }
 }
 
 class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
   @override
-  _HomePageState createState() => _HomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
@@ -28,25 +34,35 @@ class _HomePageState extends State<HomePage> {
   String status = "Disconnected";
   String scanStatus = "Idle";
   List<String> logs = [];
-  TextEditingController pidController = TextEditingController();
+  final TextEditingController pidController = TextEditingController();
 
   int countdown = 0;
   bool showNextButton = false;
 
   // ---------------- CONNECT ----------------
-  Future<void> connectToDevice(BluetoothDevice device) async {
-    connection = await BluetoothConnection.toAddress(device.address);
-    setState(() {
-      status = "Connected to ${device.name}";
-    });
+  Future<void> connect() async {
+    List<BluetoothDevice> devices =
+        await FlutterBluetoothSerial.instance.getBondedDevices();
+
+    if (devices.isNotEmpty) {
+      BluetoothDevice device = devices.first;
+
+      connection = await BluetoothConnection.toAddress(device.address);
+
+      setState(() {
+        status = "Connected: ${device.name}";
+      });
+    }
   }
 
   // ---------------- SEND COMMAND ----------------
   Future<String> sendCommand(String cmd) async {
+    if (connection == null) return "Not connected";
+
     connection!.output.add(Uint8List.fromList(utf8.encode("$cmd\r")));
     await connection!.output.allSent;
 
-    await Future.delayed(Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 500));
 
     String response = "";
 
@@ -65,6 +81,7 @@ class _HomePageState extends State<HomePage> {
 
     for (String pid in pids) {
       String resp = await sendCommand(pid);
+
       logs.add("CMD:$pid\nRESP:$resp\n---");
 
       await Future.delayed(Duration(milliseconds: delayMs));
@@ -82,7 +99,7 @@ class _HomePageState extends State<HomePage> {
     countdown = 10;
     showNextButton = false;
 
-    Timer.periodic(Duration(seconds: 1), (timer) {
+    Timer.periodic(const Duration(seconds: 1), (timer) {
       if (countdown == 0) {
         timer.cancel();
         showNextButton = true;
@@ -98,7 +115,6 @@ class _HomePageState extends State<HomePage> {
     final dir = await getExternalStorageDirectory();
     final file = File("${dir!.path}/scan_log.txt");
     await file.writeAsString(logs.join("\n"));
-    print("Saved at ${file.path}");
   }
 
   // ---------------- PHASE DATA ----------------
@@ -120,24 +136,20 @@ class _HomePageState extends State<HomePage> {
     "220040","220050","220060","220070",
     "220080","220090","2200A0","2200B0",
     "2200C0","2200D0","2200E0","2200F0",
-
     "220100","220110","220120","220130",
     "220140","220150","220160","220170",
     "220180","220190","2201A0","2201B0",
     "2201C0","2201D0","2201E0","2201F0",
-
     "221000","221010","221020",
     "221100","221110",
-
     "222000","222010","223000"
   ];
 
   final phase4 = [
-    "2201A0","2201A1","2201A2","2201A3",
-    "2201B0","2201B1","2201B2",
+    "2201A0","2201A1","2201A2",
+    "2201B0","2201B1",
     "2201C0","2201C1",
     "2201D0","2201D1","2201D2",
-
     "2210A0","2210A1",
     "2210B0",
     "221100","221101"
@@ -148,52 +160,55 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Kia PID Scanner"),
+        title: const Text("Kia PID Scanner"),
         actions: [
           IconButton(
-            icon: Icon(Icons.share),
+            icon: const Icon(Icons.share),
             onPressed: exportLogs,
           )
         ],
       ),
       body: Column(
         children: [
+          ElevatedButton(
+              onPressed: connect,
+              child: const Text("Connect Bluetooth")),
+
           Text(status),
+
           Text(scanStatus,
               style: TextStyle(
                   color: scanStatus == "Scanning..."
                       ? Colors.orange
                       : Colors.green)),
 
-          // PHASE BUTTONS
           ElevatedButton(
               onPressed: () => runPhase(phase1, 800),
-              child: Text("Run Phase 1")),
+              child: const Text("Run Phase 1")),
 
           ElevatedButton(
               onPressed: () => runPhase(phase2, 1000),
-              child: Text("Run Phase 2")),
+              child: const Text("Run Phase 2")),
 
           ElevatedButton(
               onPressed: () => runPhase(phase3, 1300),
-              child: Text("Run Phase 3")),
+              child: const Text("Run Phase 3")),
 
           ElevatedButton(
               onPressed: () => runPhase(phase4, 1300),
-              child: Text("Run Phase 4")),
+              child: const Text("Run Phase 4")),
 
-          // TIMER
           if (countdown > 0) Text("Next Phase in: $countdown sec"),
 
           if (showNextButton)
-            Text("You can start next phase now", style: TextStyle(color: Colors.green)),
+            const Text("You can start next phase",
+                style: TextStyle(color: Colors.green)),
 
-          // MANUAL INPUT
           Padding(
-            padding: EdgeInsets.all(8),
+            padding: const EdgeInsets.all(8),
             child: TextField(
               controller: pidController,
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 border: OutlineInputBorder(),
                 labelText: "Enter PID (e.g. 2201D2)",
               ),
@@ -207,9 +222,8 @@ class _HomePageState extends State<HomePage> {
                 logs.add("CMD:$cmd\nRESP:$resp\n---");
                 setState(() {});
               },
-              child: Text("Send Manual PID")),
+              child: const Text("Send Manual PID")),
 
-          // LOG VIEW
           Expanded(
             child: ListView.builder(
               itemCount: logs.length,
