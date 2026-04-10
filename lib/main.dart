@@ -1,10 +1,5 @@
-// Updated Flutter app with:
-// 1. Bluetooth enable request
-// 2. Refresh/search paired devices
-// 3. Select ELM327 device
-// 4. PID input box
-// 5. Send command
-// 6. Save response logs
+// Flutter app: ELM327 Auto Scan + Manual PID + Export
+// Uses: flutter_bluetooth_serial_plus, sqflite, share_plus
 
 import 'dart:async';
 import 'dart:convert';
@@ -18,334 +13,258 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sqflite/sqflite.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+void main() => runApp(const MyApp());
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'ELM327 PID Logger',
+      title: 'ELM327 Scanner',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: const BluetoothDeviceScreen(),
+      home: const DeviceScreen(),
     );
   }
 }
 
-class DBHelper {
+// ---------------- DB ----------------
+class DB {
   static Database? _db;
 
-  static Future<Database> get database async {
+  static Future<Database> get db async {
     if (_db != null) return _db!;
-    _db = await initDB();
+    final path = join(await getDatabasesPath(), 'logs.db');
+    _db = await openDatabase(path, version: 1, onCreate: (d, v) async {
+      await d.execute('''
+      CREATE TABLE logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cmd TEXT,
+        resp TEXT,
+        time TEXT
+      )
+      ''');
+    });
     return _db!;
   }
 
-  static Future<Database> initDB() async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'elm_logs.db');
-
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: (db, version) async {
-        await db.execute('''
-          CREATE TABLE logs(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            command TEXT,
-            response TEXT,
-            timestamp TEXT
-          )
-        ''');
-      },
-    );
-  }
-
-  static Future<void> insertLog(String command, String response) async {
-    final db = await database;
-    await db.insert('logs', {
-      'command': command,
-      'response': response,
-      'timestamp': DateTime.now().toIso8601String(),
+  static Future<void> insert(String c, String r) async {
+    final d = await db;
+    await d.insert('logs', {
+      'cmd': c,
+      'resp': r,
+      'time': DateTime.now().toIso8601String()
     });
   }
 
-  static Future<List<Map<String, dynamic>>> getLogs() async {
-    final db = await database;
-    return await db.query('logs', orderBy: 'id DESC');
+  static Future<List<Map<String, dynamic>>> all() async {
+    final d = await db;
+    return d.query('logs', orderBy: 'id DESC');
   }
 }
 
-class BluetoothDeviceScreen extends StatefulWidget {
-  const BluetoothDeviceScreen({super.key});
-
+// ---------------- DEVICE ----------------
+class DeviceScreen extends StatefulWidget {
+  const DeviceScreen({super.key});
   @override
-  State<BluetoothDeviceScreen> createState() =>
-      _BluetoothDeviceScreenState();
+  State<DeviceScreen> createState() => _DeviceScreenState();
 }
 
-class _BluetoothDeviceScreenState extends State<BluetoothDeviceScreen> {
+class _DeviceScreenState extends State<DeviceScreen> {
   List<BluetoothDevice> devices = [];
   bool loading = true;
 
   @override
   void initState() {
     super.initState();
-    initializeBluetooth();
+    init();
   }
 
-  Future<void> initializeBluetooth() async {
+  Future<void> init() async {
     await Permission.bluetooth.request();
     await Permission.bluetoothScan.request();
     await Permission.bluetoothConnect.request();
     await Permission.location.request();
 
-    bool? enabled = await FlutterBluetoothSerial.instance.isEnabled;
-
-    if (enabled == false) {
+    if (!(await FlutterBluetoothSerial.instance.isEnabled ?? false)) {
       await FlutterBluetoothSerial.instance.requestEnable();
     }
 
-    await loadDevices();
-  }
-
-  Future<void> loadDevices() async {
-    setState(() => loading = true);
-
-    final bondedDevices =
-        await FlutterBluetoothSerial.instance.getBondedDevices();
-
-    setState(() {
-      devices = bondedDevices;
-      loading = false;
-    });
+    devices = await FlutterBluetoothSerial.instance.getBondedDevices();
+    setState(() => loading = false);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Select ELM327 Device'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: loadDevices,
-          )
-        ],
-      ),
+      appBar: AppBar(title: const Text('Select ELM327')),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : devices.isEmpty
-              ? const Center(
-                  child: Text('No paired Bluetooth devices found'),
-                )
-              : ListView.builder(
-                  itemCount: devices.length,
-                  itemBuilder: (context, index) {
-                    final device = devices[index];
-                    return ListTile(
-                      leading: const Icon(Icons.bluetooth),
-                      title: Text(device.name ?? 'Unknown Device'),
-                      subtitle: Text(device.address),
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => PIDTesterScreen(device: device),
-                          ),
-                        );
-                      },
-                    );
-                  },
-                ),
+          : ListView.builder(
+              itemCount: devices.length,
+              itemBuilder: (_, i) {
+                final d = devices[i];
+                return ListTile(
+                  title: Text(d.name ?? 'Unknown'),
+                  subtitle: Text(d.address),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => ScannerScreen(device: d)),
+                  ),
+                );
+              }),
     );
   }
 }
 
-class PIDTesterScreen extends StatefulWidget {
+// ---------------- SCANNER ----------------
+class ScannerScreen extends StatefulWidget {
   final BluetoothDevice device;
-
-  const PIDTesterScreen({super.key, required this.device});
+  const ScannerScreen({super.key, required this.device});
 
   @override
-  State<PIDTesterScreen> createState() => _PIDTesterScreenState();
+  State<ScannerScreen> createState() => _ScannerScreenState();
 }
 
-class _PIDTesterScreenState extends State<PIDTesterScreen> {
-  BluetoothConnection? connection;
-  bool isConnected = false;
-  bool isConnecting = true;
-
-  String incomingBuffer = '';
-  final TextEditingController commandController = TextEditingController();
-
+class _ScannerScreenState extends State<ScannerScreen> {
+  BluetoothConnection? conn;
+  String buffer = '';
   List<Map<String, dynamic>> logs = [];
-  StreamSubscription? inputSubscription;
+  final TextEditingController ctrl = TextEditingController();
+  bool connecting = true;
+
+  final List<String> scanList = [
+    '0100','0120','0140','0160','0180',
+    '0104','0105','010C','010D','015E',
+    '0178','0179','017A','017B'
+  ];
 
   @override
   void initState() {
     super.initState();
-    connectELM();
-    refreshLogs();
+    connect();
+    refresh();
   }
 
-  Future<void> connectELM() async {
-    try {
-      connection = await BluetoothConnection.toAddress(widget.device.address);
-      isConnected = true;
-      isConnecting = false;
-      setState(() {});
-
-      inputSubscription = connection!.input!.listen((data) {
-        incomingBuffer += ascii.decode(data);
-      });
-
-      await initializeELM327();
-    } catch (e) {
-      debugPrint('Connection Error: $e');
-      isConnecting = false;
-      setState(() {});
-    }
+  Future<void> connect() async {
+    conn = await BluetoothConnection.toAddress(widget.device.address);
+    conn!.input!.listen((d) => buffer += ascii.decode(d));
+    connecting = false;
+    setState(() {});
+    await initELM();
   }
 
-  Future<void> initializeELM327() async {
-    await sendRaw('ATZ');
-    await sendRaw('ATE0');
-    await sendRaw('ATL0');
-    await sendRaw('ATS0');
-    await sendRaw('ATH0');
-    await sendRaw('ATSP0');
+  Future<void> initELM() async {
+    await send('ATZ');
+    await send('ATE0');
+    await send('ATL0');
+    await send('ATS0');
+    await send('ATH0');
+    await send('ATSP0');
   }
 
-  Future<void> sendRaw(String cmd) async {
-    connection?.output.add(ascii.encode('$cmd\r'));
-    await connection?.output.allSent;
+  Future<void> send(String cmd) async {
+    conn?.output.add(ascii.encode('$cmd\r'));
+    await conn?.output.allSent;
     await Future.delayed(const Duration(milliseconds: 500));
   }
 
-  Future<void> sendCommand() async {
-    final cmd = commandController.text.trim();
-    if (cmd.isEmpty) return;
-
-    incomingBuffer = '';
-
-    await sendRaw(cmd);
+  Future<String> request(String cmd) async {
+    buffer = '';
+    await send(cmd);
     await Future.delayed(const Duration(seconds: 1));
-
-    String response = incomingBuffer.trim();
-
-    await DBHelper.insertLog(cmd, response);
-    await refreshLogs();
-
-    commandController.clear();
+    return buffer.trim();
   }
 
-  Future<void> refreshLogs() async {
-    logs = await DBHelper.getLogs();
+  Future<void> manualSend() async {
+    final c = ctrl.text.trim();
+    if (c.isEmpty) return;
+    final r = await request(c);
+    await DB.insert(c, r);
+    ctrl.clear();
+    refresh();
+  }
+
+  Future<void> runScan() async {
+    for (var c in scanList) {
+      final r = await request(c);
+      await DB.insert(c, r);
+    }
+    refresh();
+  }
+
+  Future<void> refresh() async {
+    logs = await DB.all();
     setState(() {});
   }
 
-  Future<void> exportLogs() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/elm_logs.txt');
+  Future<void> export() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/elm_log.txt');
 
-    String content = '';
-    for (var log in logs) {
-      content +=
-          'CMD: ${log['command']}\nRESP: ${log['response']}\nTIME: ${log['timestamp']}\n-------------------\n';
+    String txt = '';
+    for (var l in logs) {
+      txt += 'CMD:${l['cmd']}\nRESP:${l['resp']}\nTIME:${l['time']}\n---\n';
     }
 
-    await file.writeAsString(content);
-    Share.shareXFiles([XFile(file.path)], text: 'ELM327 Logs');
-  }
-
-  @override
-  void dispose() {
-    inputSubscription?.cancel();
-    connection?.dispose();
-    commandController.dispose();
-    super.dispose();
-  }
-
-  Widget buildLogCard(Map<String, dynamic> log) {
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('CMD: ${log['command']}',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 6),
-            Text('RESP: ${log['response']}'),
-            const SizedBox(height: 6),
-            Text(log['timestamp'],
-                style:
-                    const TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
-      ),
-    );
+    await file.writeAsString(txt);
+    Share.shareXFiles([XFile(file.path)], text: 'ELM Logs');
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.device.name ?? 'PID Tester'),
+        title: Text(widget.device.name ?? ''),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: exportLogs,
-          )
+          IconButton(onPressed: export, icon: const Icon(Icons.share))
         ],
       ),
-      body: isConnecting
+      body: connecting
           ? const Center(child: CircularProgressIndicator())
-          : !isConnected
-              ? const Center(child: Text('Connection Failed'))
-              : Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: commandController,
-                              decoration: const InputDecoration(
-                                border: OutlineInputBorder(),
-                                labelText: 'Enter PID / AT Command',
-                                hintText: 'Example: 010C',
-                              ),
-                            ),
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: ctrl,
+                          decoration: const InputDecoration(
+                            hintText: 'Enter PID (010C)',
+                            border: OutlineInputBorder(),
                           ),
-                          const SizedBox(width: 10),
-                          ElevatedButton(
-                            onPressed: sendCommand,
-                            child: const Text('Send'),
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
-                    const Divider(),
-                    Expanded(
-                      child: logs.isEmpty
-                          ? const Center(child: Text('No logs saved yet'))
-                          : ListView.builder(
-                              itemCount: logs.length,
-                              itemBuilder: (context, index) {
-                                return buildLogCard(logs[index]);
-                              },
-                            ),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      ElevatedButton(onPressed: manualSend, child: const Text('Send'))
+                    ],
+                  ),
                 ),
+
+                ElevatedButton(
+                  onPressed: runScan,
+                  child: const Text('Run Full Scan'),
+                ),
+
+                const Divider(),
+
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: logs.length,
+                    itemBuilder: (_, i) {
+                      final l = logs[i];
+                      return ListTile(
+                        title: Text('CMD: ${l['cmd']}'),
+                        subtitle: Text(l['resp']),
+                      );
+                    },
+                  ),
+                )
+              ],
+            ),
     );
   }
 }
