@@ -1,30 +1,128 @@
-name: kia_pid_logger
-description: Kia Sonet ELM327 PID Logger
+Building Android
+3m 18s
 
-publish_to: 'none'
 
-version: 1.0.0+1
 
-environment:
-  sdk: ">=3.0.0 <4.0.0"
+Showing the last 50 lines. Click this button to load the full log
+lib/main.dart:37:32: Error: Type 'BluetoothDevice' not found.
+  Future<void> connectToDevice(BluetoothDevice device) async {
+                               ^^^^^^^^^^^^^^^
+lib/main.dart:27:3: Error: 'BluetoothConnection' isn't a type.
+  BluetoothConnection? connection;
+  ^^^^^^^^^^^^^^^^^^^
+lib/main.dart:37:32: Error: 'BluetoothDevice' isn't a type.
+  Future<void> connectToDevice(BluetoothDevice device) async {
+                               ^^^^^^^^^^^^^^^
+lib/main.dart:38:24: Error: The getter 'BluetoothConnection' isn't defined for the type '_HomePageState'.
+ - '_HomePageState' is from 'package:kia_pid_logger/main.dart' ('lib/main.dart').
+Try correcting the name to the name of an existing getter, or defining a getter or field named 'BluetoothConnection'.
+    connection = await BluetoothConnection.toAddress(device.address);
+                       ^^^^^^^^^^^^^^^^^^^
+Unhandled exception:
+FileSystemException(uri=org-dartlang-untranslatable-uri:package%3Aflutter_bluetooth_serial%2Fflutter_bluetooth_serial.dart; message=StandardFileSystem only supports file:* and data:* URIs)
+#0      StandardFileSystem.entityForUri (package:front_end/src/api_prototype/standard_file_system.dart:45)
+#1      asFileUri (package:vm/kernel_front_end.dart:1038)
+#2      writeDepfile (package:vm/kernel_front_end.dart:1201)
+<asynchronous suspension>
+#3      FrontendCompiler.compile (package:frontend_server/frontend_server.dart:751)
+<asynchronous suspension>
+#4      starter (package:frontend_server/starter.dart:102)
+<asynchronous suspension>
+#5      main (file:///Volumes/Work/s/w/ir/x/w/sdk/pkg/frontend_server/bin/frontend_server_starter.dart:13)
+<asynchronous suspension>
 
-dependencies:
-  flutter:
-    sdk: flutter
+Target kernel_snapshot_program failed: Exception
 
-  cupertino_icons: ^1.0.8
-  flutter_bluetooth_serial_plus: ^0.5.1
-  sqflite: ^2.3.0
-  path: ^1.9.0
-  permission_handler: ^11.0.1
-  share_plus: ^7.2.1
-  path_provider: ^2.1.2
 
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
+FAILURE: Build failed with an exception.
 
-  flutter_lints: ^5.0.0
+* What went wrong:
+Execution failed for task ':app:compileFlutterBuildDebug'.
+> Process 'command '/Users/builder/programs/flutter/bin/flutter'' finished with non-zero exit value 1
 
-flutter:
-  uses-material-design: true
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 3m 14s
+Running Gradle task 'assembleDebug'...                            195.7s
+Gradle task assembleDebug failed with exit code 1
+
+
+Build failed :|
+Failed to build for Android
+
+Personal Account
+Personal Account
+Personal Account
+Personal Account
+Create new team
+Applications
+Builds
+OTA Updates
+NEW
+App Preview
+Settings
+Billing
+All systems operational
+
+User preferences
+krish2294@gmail.com
+
+Log out
+kia_pid_logger
+kia_pid_logger
+github.com/Krishnak96270/kia_pid_logger
+
+
+Start new build
+Build overview
+ID:
+69d8d81cb100ca046128acf9
+
+Please provide this ID when you contact our support team
+Index:
+8
+Status:
+failed
+Workflow:
+Default Workflow
+Started by:
+krish2294@gmail.com
+
+krish2294@gmail.com
+Started:
+11 minutes ago
+Apr 10th, 2026 at 16:29 IST
+Duration:
+5m 38s
+Machine:
+Mac mini M2
+Branch:
+main
+Commit:
+42d41e1
+Current configuration
+Flutter channel:
+stable
+Mode:
+debug
+Build for:
+Android
+Click on the build steps for details.
+Preparing build machine
+36s
+Fetching app sources
+3s
+Installing SDKs
+1m 20s
+Installing dependencies
+18s
+Publishing
+< 1s
+Cleaning up
+< 1s
+Failed to build for Android
+
