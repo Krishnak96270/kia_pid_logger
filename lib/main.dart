@@ -1,270 +1,225 @@
-// Flutter app: ELM327 Auto Scan + Manual PID + Export
-// Uses: flutter_bluetooth_serial_plus, sqflite, share_plus
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_bluetooth_serial_plus/flutter_bluetooth_serial_plus.dart';
-import 'package:path/path.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:sqflite/sqflite.dart';
 
-void main() => runApp(const MyApp());
+void main() {
+  runApp(MyApp());
+}
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'ELM327 Scanner',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const DeviceScreen(),
-    );
+    return MaterialApp(home: HomePage());
   }
 }
 
-// ---------------- DB ----------------
-class DB {
-  static Database? _db;
+class HomePage extends StatefulWidget {
+  @override
+  _HomePageState createState() => _HomePageState();
+}
 
-  static Future<Database> get db async {
-    if (_db != null) return _db!;
-    final path = join(await getDatabasesPath(), 'logs.db');
-    _db = await openDatabase(path, version: 1, onCreate: (d, v) async {
-      await d.execute('''
-      CREATE TABLE logs(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cmd TEXT,
-        resp TEXT,
-        time TEXT
-      )
-      ''');
-    });
-    return _db!;
-  }
+class _HomePageState extends State<HomePage> {
+  BluetoothConnection? connection;
+  String status = "Disconnected";
+  String scanStatus = "Idle";
+  List<String> logs = [];
+  TextEditingController pidController = TextEditingController();
 
-  static Future<void> insert(String c, String r) async {
-    final d = await db;
-    await d.insert('logs', {
-      'cmd': c,
-      'resp': r,
-      'time': DateTime.now().toIso8601String()
+  int countdown = 0;
+  bool showNextButton = false;
+
+  // ---------------- CONNECT ----------------
+  Future<void> connectToDevice(BluetoothDevice device) async {
+    connection = await BluetoothConnection.toAddress(device.address);
+    setState(() {
+      status = "Connected to ${device.name}";
     });
   }
 
-  static Future<List<Map<String, dynamic>>> all() async {
-    final d = await db;
-    return d.query('logs', orderBy: 'id DESC');
-  }
-}
+  // ---------------- SEND COMMAND ----------------
+  Future<String> sendCommand(String cmd) async {
+    connection!.output.add(Uint8List.fromList(utf8.encode("$cmd\r")));
+    await connection!.output.allSent;
 
-// ---------------- DEVICE ----------------
-class DeviceScreen extends StatefulWidget {
-  const DeviceScreen({super.key});
-  @override
-  State<DeviceScreen> createState() => _DeviceScreenState();
-}
+    await Future.delayed(Duration(milliseconds: 500));
 
-class _DeviceScreenState extends State<DeviceScreen> {
-  List<BluetoothDevice> devices = [];
-  bool loading = true;
+    String response = "";
 
-  @override
-  void initState() {
-    super.initState();
-    init();
-  }
-
-  Future<void> init() async {
-    await Permission.bluetooth.request();
-    await Permission.bluetoothScan.request();
-    await Permission.bluetoothConnect.request();
-    await Permission.location.request();
-
-    if (!(await FlutterBluetoothSerial.instance.isEnabled ?? false)) {
-      await FlutterBluetoothSerial.instance.requestEnable();
+    await for (Uint8List data in connection!.input!) {
+      response += utf8.decode(data);
+      if (response.contains(">")) break;
     }
 
-    devices = await FlutterBluetoothSerial.instance.getBondedDevices();
-    setState(() => loading = false);
+    return response.replaceAll(">", "").trim();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Select ELM327')),
-      body: loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView.builder(
-              itemCount: devices.length,
-              itemBuilder: (_, i) {
-                final d = devices[i];
-                return ListTile(
-                  title: Text(d.name ?? 'Unknown'),
-                  subtitle: Text(d.address),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => ScannerScreen(device: d)),
-                  ),
-                );
-              }),
-    );
+  // ---------------- PHASE RUN ----------------
+  Future<void> runPhase(List<String> pids, int delayMs) async {
+    scanStatus = "Scanning...";
+    setState(() {});
+
+    for (String pid in pids) {
+      String resp = await sendCommand(pid);
+      logs.add("CMD:$pid\nRESP:$resp\n---");
+
+      await Future.delayed(Duration(milliseconds: delayMs));
+      setState(() {});
+    }
+
+    scanStatus = "Completed";
+    setState(() {});
+
+    startCountdown();
   }
-}
 
-// ---------------- SCANNER ----------------
-class ScannerScreen extends StatefulWidget {
-  final BluetoothDevice device;
-  const ScannerScreen({super.key, required this.device});
+  // ---------------- COUNTDOWN ----------------
+  void startCountdown() {
+    countdown = 10;
+    showNextButton = false;
 
-  @override
-  State<ScannerScreen> createState() => _ScannerScreenState();
-}
+    Timer.periodic(Duration(seconds: 1), (timer) {
+      if (countdown == 0) {
+        timer.cancel();
+        showNextButton = true;
+      } else {
+        countdown--;
+      }
+      setState(() {});
+    });
+  }
 
-class _ScannerScreenState extends State<ScannerScreen> {
-  BluetoothConnection? conn;
-  String buffer = '';
-  List<Map<String, dynamic>> logs = [];
-  final TextEditingController ctrl = TextEditingController();
-  bool connecting = true;
+  // ---------------- EXPORT ----------------
+  Future<void> exportLogs() async {
+    final dir = await getExternalStorageDirectory();
+    final file = File("${dir!.path}/scan_log.txt");
+    await file.writeAsString(logs.join("\n"));
+    print("Saved at ${file.path}");
+  }
 
-  final List<String> scanList = [
-    '0100','0120','0140','0160','0180',
-    '0104','0105','010C','010D','015E',
-    '0178','0179','017A','017B'
+  // ---------------- PHASE DATA ----------------
+
+  final phase1 = [
+    "0100","0120","0140","0160","0180",
+    "0104","0105","010C","010D","015E",
+    "0111","010F","0110",
+    "0178","0179","017A","017B"
   ];
 
-  @override
-  void initState() {
-    super.initState();
-    connect();
-    refresh();
-  }
+  List<String> phase2 = List.generate(256, (i) {
+    String hex = i.toRadixString(16).padLeft(2, '0').toUpperCase();
+    return "01$hex";
+  });
 
-  Future<void> connect() async {
-    conn = await BluetoothConnection.toAddress(widget.device.address);
-    conn!.input!.listen((d) => buffer += ascii.decode(d));
-    connecting = false;
-    setState(() {});
-    await initELM();
-  }
+  final phase3 = [
+    "220000","220010","220020","220030",
+    "220040","220050","220060","220070",
+    "220080","220090","2200A0","2200B0",
+    "2200C0","2200D0","2200E0","2200F0",
 
-  Future<void> initELM() async {
-    await send('ATZ');
-    await send('ATE0');
-    await send('ATL0');
-    await send('ATS0');
-    await send('ATH0');
-    await send('ATSP0');
-  }
+    "220100","220110","220120","220130",
+    "220140","220150","220160","220170",
+    "220180","220190","2201A0","2201B0",
+    "2201C0","2201D0","2201E0","2201F0",
 
-  Future<void> send(String cmd) async {
-    conn?.output.add(ascii.encode('$cmd\r'));
-    await conn?.output.allSent;
-    await Future.delayed(const Duration(milliseconds: 500));
-  }
+    "221000","221010","221020",
+    "221100","221110",
 
-  Future<String> request(String cmd) async {
-    buffer = '';
-    await send(cmd);
-    await Future.delayed(const Duration(seconds: 1));
-    return buffer.trim();
-  }
+    "222000","222010","223000"
+  ];
 
-  Future<void> manualSend() async {
-    final c = ctrl.text.trim();
-    if (c.isEmpty) return;
-    final r = await request(c);
-    await DB.insert(c, r);
-    ctrl.clear();
-    refresh();
-  }
+  final phase4 = [
+    "2201A0","2201A1","2201A2","2201A3",
+    "2201B0","2201B1","2201B2",
+    "2201C0","2201C1",
+    "2201D0","2201D1","2201D2",
 
-  Future<void> runScan() async {
-    for (var c in scanList) {
-      final r = await request(c);
-      await DB.insert(c, r);
-    }
-    refresh();
-  }
+    "2210A0","2210A1",
+    "2210B0",
+    "221100","221101"
+  ];
 
-  Future<void> refresh() async {
-    logs = await DB.all();
-    setState(() {});
-  }
-
-  Future<void> export() async {
-    final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/elm_log.txt');
-
-    String txt = '';
-    for (var l in logs) {
-      txt += 'CMD:${l['cmd']}\nRESP:${l['resp']}\nTIME:${l['time']}\n---\n';
-    }
-
-    await file.writeAsString(txt);
-    Share.shareXFiles([XFile(file.path)], text: 'ELM Logs');
-  }
-
+  // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.device.name ?? ''),
+        title: Text("Kia PID Scanner"),
         actions: [
-          IconButton(onPressed: export, icon: const Icon(Icons.share))
+          IconButton(
+            icon: Icon(Icons.share),
+            onPressed: exportLogs,
+          )
         ],
       ),
-      body: connecting
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: ctrl,
-                          decoration: const InputDecoration(
-                            hintText: 'Enter PID (010C)',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(onPressed: manualSend, child: const Text('Send'))
-                    ],
-                  ),
-                ),
+      body: Column(
+        children: [
+          Text(status),
+          Text(scanStatus,
+              style: TextStyle(
+                  color: scanStatus == "Scanning..."
+                      ? Colors.orange
+                      : Colors.green)),
 
-                ElevatedButton(
-                  onPressed: runScan,
-                  child: const Text('Run Full Scan'),
-                ),
+          // PHASE BUTTONS
+          ElevatedButton(
+              onPressed: () => runPhase(phase1, 800),
+              child: Text("Run Phase 1")),
 
-                const Divider(),
+          ElevatedButton(
+              onPressed: () => runPhase(phase2, 1000),
+              child: Text("Run Phase 2")),
 
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: logs.length,
-                    itemBuilder: (_, i) {
-                      final l = logs[i];
-                      return ListTile(
-                        title: Text('CMD: ${l['cmd']}'),
-                        subtitle: Text(l['resp']),
-                      );
-                    },
-                  ),
-                )
-              ],
+          ElevatedButton(
+              onPressed: () => runPhase(phase3, 1300),
+              child: Text("Run Phase 3")),
+
+          ElevatedButton(
+              onPressed: () => runPhase(phase4, 1300),
+              child: Text("Run Phase 4")),
+
+          // TIMER
+          if (countdown > 0) Text("Next Phase in: $countdown sec"),
+
+          if (showNextButton)
+            Text("You can start next phase now", style: TextStyle(color: Colors.green)),
+
+          // MANUAL INPUT
+          Padding(
+            padding: EdgeInsets.all(8),
+            child: TextField(
+              controller: pidController,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: "Enter PID (e.g. 2201D2)",
+              ),
             ),
+          ),
+
+          ElevatedButton(
+              onPressed: () async {
+                String cmd = pidController.text.trim();
+                String resp = await sendCommand(cmd);
+                logs.add("CMD:$cmd\nRESP:$resp\n---");
+                setState(() {});
+              },
+              child: Text("Send Manual PID")),
+
+          // LOG VIEW
+          Expanded(
+            child: ListView.builder(
+              itemCount: logs.length,
+              itemBuilder: (context, index) {
+                return Text(logs[index]);
+              },
+            ),
+          )
+        ],
+      ),
     );
   }
 }
